@@ -84,9 +84,7 @@ pindex_urls.forEach(async url => {
     let prefix = new URL(url).origin
     while (true) {
         let urls = await (await fetch(url)).json()
-        for (let url of urls) {
-            proxy_url(prefix + url)
-        }
+        for (let url of urls) proxy_url(prefix + url)
         await new Promise(done => setTimeout(done, 1000 * 60 * 60))
     }
 })
@@ -94,20 +92,57 @@ pindex_urls.forEach(async url => {
 ////////////////////////////////
 
 async function proxy_url(url) {
-    const parsedUrl = new URL(url)
+    let chain = proxy_url.chain || (proxy_url.chain = Promise.resolve())
+
+    async function ensure_path(path) {
+        // ensure that the path leading to our file exists..
+        await (chain = chain.then(async () => {
+            try {
+                await require("fs").promises.mkdir(path, { recursive: true })
+            } catch (e) {
+                let parts = path.split(require("path").sep)
+                for (let i = 1; i <= parts.length; i++) {
+                    let partial = require("path").join(...parts.slice(0, i))
+
+                    if (!(await is_dir(partial))) {
+                        let save = await require("fs").promises.readFile(partial)
+
+                        await require("fs").promises.unlink(partial)
+                        await require("fs").promises.mkdir(path, { recursive: true })
+
+                        while (await is_dir(partial))
+                            partial = require("path").join(partial, 'index.html')
+
+                        await require("fs").promises.writeFile(partial, save)
+                        break
+                    }
+                }
+            }
+        }))
+    }
+
     // normalize url by removing any trailing /index.html/index.html/
-    parsedUrl.pathname = parsedUrl.pathname.replace(/(\/index\.html|\/)+$/, '')
-    url = parsedUrl.toString()
+    let normalized_url = url.replace(/(\/index\.html|\/)+$/, '')
+    let wasnt_normal = normalized_url != url
+    url = normalized_url
+
+    let path = url.replace(/^https?:\/\//, '')
+    let fullpath = require("path").join(proxy_base, path)
+
+    // if we're accessing /blah/index.html, it will be normalized to /blah,
+    // but we still want to create a directory out of blah in this case
+    if (wasnt_normal && !(await is_dir(fullpath))) ensure_path(fullpath)
 
     if (!proxy_url.cache) proxy_url.cache = {}
     if (proxy_url.cache[url]) return
     proxy_url.cache[url] = true
 
+    let last_text = ''
+
     console.log(`proxy_url: ${url}`)
 
     let peer = Math.random().toString(36).slice(2)
     let current_version = []
-    let chain = Promise.resolve()
 
     braid_fetch_wrapper(url, {
         headers: {
@@ -150,43 +185,8 @@ async function proxy_url(url) {
         peer
     })
 
-    let last_text = ''
-    let path = url.replace(/^https?:\/\//, '')
-    let fullpath = require("path").join(proxy_base, path)
 
-    // ensure that the path leading to our file exists..
-    await (chain = chain.then(async () => {
-        let path_dir = require("path").dirname(fullpath)
-        try {
-            await require("fs").promises.mkdir(path_dir, { recursive: true })
-        } catch (e) {
-            let parts = path.split(require("path").sep)
-            for (let i = 1; i <= parts.length; i++) {
-                let partial = require("path").join(...parts.slice(0, i))
-                let p = require("path").join(proxy_base, partial)
-
-                // console.log(`p = ${p}`)
-
-                if (!(await is_dir(p))) {
-                    let save = await require("fs").promises.readFile(p)
-                    let func = proxy_url.path_to_func[partial]
-                    delete proxy_url.path_to_func[partial]
-
-                    await require("fs").promises.unlink(p)
-                    await require("fs").promises.mkdir(path_dir, { recursive: true })
-
-                    while (await is_dir(p)) {
-                        p = require("path").join(p, 'index.html')
-                        partial = require("path").join(partial, 'index.html')
-                    }
-
-                    await require("fs").promises.writeFile(p, save)
-                    proxy_url.path_to_func[partial] = func
-                    break
-                }
-            }
-        }
-    }))
+    await ensure_path(require("path").dirname(fullpath))
 
     async function get_fullpath() {
         let p = fullpath
@@ -216,15 +216,17 @@ async function proxy_url(url) {
     })
 
     if (!proxy_url.path_to_func) proxy_url.path_to_func = {}
-    proxy_url.path_to_func[path] = () => {
-        simpleton.changed()
-    }
+    proxy_url.path_to_func[path] = () => simpleton.changed()
 
     if (!proxy_url.chokidar) {
         proxy_url.chokidar = true
         require('chokidar').watch(proxy_base).on('change', (path) => {
             path = require('path').relative(proxy_base, path)
             console.log(`path changed: ${path}`)
+
+            path = path.replace(/(\/index\.html|\/)+$/, '')
+            console.log(`normalized path: ${path}`)
+
             proxy_url.path_to_func[path]()
         });
     }

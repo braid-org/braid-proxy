@@ -1,6 +1,6 @@
 {
   "name": "braid-proxy",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "A proxy exposing and caching web and file resources over a convenient protocol",
   "author": "Braid Working Group",
   "repository": "braid-org/braid-proxy",
