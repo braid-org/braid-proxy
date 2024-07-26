@@ -89,6 +89,10 @@ pindex_urls.forEach(async url => {
     }
 })
 
+braid_text.list().then(x => {
+    for (let xx of x) proxy_url(xx)
+})
+
 ////////////////////////////////
 
 async function proxy_url(url) {
@@ -126,6 +130,10 @@ async function proxy_url(url) {
     let wasnt_normal = normalized_url != url
     url = normalized_url
 
+    if (!proxy_url.cache) proxy_url.cache = {}
+    if (proxy_url.cache[url]) return
+    proxy_url.cache[url] = true
+
     let path = url.replace(/^https?:\/\//, '')
     let fullpath = require("path").join(proxy_base, path)
 
@@ -133,16 +141,11 @@ async function proxy_url(url) {
     // but we still want to create a directory out of blah in this case
     if (wasnt_normal && !(await is_dir(fullpath))) ensure_path(fullpath)
 
-    if (!proxy_url.cache) proxy_url.cache = {}
-    if (proxy_url.cache[url]) return
-    proxy_url.cache[url] = true
-
     let last_text = ''
 
     console.log(`proxy_url: ${url}`)
 
     let peer = Math.random().toString(36).slice(2)
-    let current_version = []
 
     braid_fetch_wrapper(url, {
         headers: {
@@ -151,7 +154,10 @@ async function proxy_url(url) {
         },
         subscribe: true,
         retry: true,
-        parents: () => current_version.length ? current_version : null,
+        parents: async () => {
+            let cur = await braid_text.get(url, {})
+            if (cur.version.length) return cur.version
+        },
         peer
     }).then(x => {
         x.subscribe(update => {
@@ -162,29 +168,41 @@ async function proxy_url(url) {
         })
     })
 
-    braid_text.get(url, {
-        subscribe: async ({ version, parents, body, patches }) => {
-            if (version.length == 0) return;
+    // try a HEAD without subscribe to get the version
+    braid_fetch_wrapper(url, {
+        method: 'HEAD',
+        headers: { Accept: 'text/plain' },
+        retry: true,
+    }).then(async head_res => {
+        let parents = head_res.headers.get('version') ?
+            JSON.parse(`[${head_res.headers.get('version')}]`) :
+            null
 
-            // console.log(`local got: ${JSON.stringify({ version, parents, body, patches }, null, 4)}`)
-            // console.log(`cookie = ${cookie}`)
+        // now get everything since then, and send it back..
+        braid_text.get(url, {
+            parents,
+            merge_type: 'dt',
+            peer,
+            subscribe: async ({ version, parents, body, patches }) => {
+                if (version.length == 0) return;
 
-            await braid_fetch_wrapper(url, {
-                headers: {
-                    "Merge-Type": "dt",
-                    "Content-Type": 'text/plain',
-                    ...(cookie ? { "Cookie": cookie } : {}),
-                },
-                method: "PUT",
-                retry: true,
-                version, parents, body, patches,
-                peer
-            })
-        },
-        merge_type: 'dt',
-        peer
+                // console.log(`local got: ${JSON.stringify({ version, parents, body, patches }, null, 4)}`)
+                // console.log(`cookie = ${cookie}`)
+
+                await braid_fetch_wrapper(url, {
+                    headers: {
+                        "Merge-Type": "dt",
+                        "Content-Type": 'text/plain',
+                        ...(cookie ? { "Cookie": cookie } : {}),
+                    },
+                    method: "PUT",
+                    retry: true,
+                    version, parents, body, patches,
+                    peer
+                })
+            },
+        })
     })
-
 
     await ensure_path(require("path").dirname(fullpath))
 
@@ -410,7 +428,7 @@ async function braid_fetch_wrapper(url, params) {
         async function connect() {
             if (params.signal?.aborted) return
             try {
-                var c = await braid_fetch(url, { ...params, parents: params.parents?.() })
+                var c = await braid_fetch(url, { ...params, parents: await params.parents?.() })
                 c.subscribe((...args) => subscribe_handler?.(...args), on_error)
                 waitTime = 10
             } catch (e) {
