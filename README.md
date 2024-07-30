@@ -1,3 +1,5 @@
+# NOTE: This project has moved to [braidfs](https://github.com/braid-org/braidfs)
+
 # braid-proxy
 A proxy exposing and caching web and file resources over a convenient protocol.
 
